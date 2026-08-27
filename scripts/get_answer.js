@@ -3,29 +3,30 @@ const fs = require('fs');
 // خواندن دیتا از فایل JSON
 const data = JSON.parse(fs.readFileSync('data/hair_data.json', 'utf8'));
 
-// سوال کاربر (از آرگومان خط فرمان میاد)
-const userQuestion = process.argv[2] || '';
-const lowerQuestion = userQuestion.toLowerCase();
+// سوال کاربر از آرگومان خط فرمان
+const userQuestion = (process.argv[2] || '').toLowerCase();
 
-// جستجو برای پیدا کردن بهترین پاسخ
-let answer = "متاسفانه در دیتای من پاسخی برای این سوال پیدا نکردم. لطفا سوال خود را دقیق‌تر بپرسید. می‌توانید درباره: تناژهای رنگ (طبیعی، دودی، مسی و...)، پایه‌های دکلره، فرمول نویسی ترکیب رنگ، واریاسیون‌ها یا رنگ‌های ثابت (شرابی، ماهگونی و...) بپرسید.";
+// حذف علائم و اعداد اضافی برای پردازش بهتر
+const cleanQuestion = userQuestion.replace(/[?؟!.,،]/g, ' ');
 
-let bestMatchCount = 0;
-let bestAnswer = "";
+let bestAnswer = "متاسفانه در دیتای من پاسخی برای این سوال پیدا نکردم. لطفا سوال خود را دقیق‌تر بپرسید. می‌توانید درباره: تناژهای رنگ (طبیعی، دودی، مسی و...)، پایه‌های دکلره، فرمول نویسی ترکیب رنگ، واریاسیون‌ها یا رنگ‌های ثابت بپرسید.";
+let maxScore = 0;
 
 for (const item of data.questions) {
-  // بررسی می‌کنیم آیا کلمات کلیدی در سوال کاربر هست یا نه
-  const matchCount = item.keywords.filter(keyword => lowerQuestion.includes(keyword)).length;
+  let score = 0;
   
-  if (matchCount > bestMatchCount) {
-    bestMatchCount = matchCount;
+  // بررسی کلمات کلیدی
+  for (const keyword of item.keywords) {
+    if (cleanQuestion.includes(keyword.toLowerCase())) {
+      score += 3; // امتیاز بیشتر برای تطابق کامل کلمه
+    }
+  }
+  
+  // اگر کلمه کلیدی در سوال بود، امتیاز بده
+  if (score > maxScore) {
+    maxScore = score;
     bestAnswer = item.answer;
   }
 }
 
-if (bestMatchCount > 0) {
-  answer = bestAnswer;
-}
-
-// چاپ پاسخ برای استفاده در GitHub Actions
-console.log(answer);
+console.log(bestAnswer);
