@@ -12,14 +12,31 @@ jobs:
   chat:
     runs-on: ubuntu-latest
     steps:
-      - name: Send reply
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      
+      - name: Run script to get answer
+        id: get_answer
+        run: |
+          # اینجا عنوان و متن issue رو به اسکریپت پاس می‌دیم
+          node scripts/get_answer.js "${{ github.event.issue.title }} ${{ github.event.issue.body }}" > answer.txt
+          cat answer.txt
+      
+      - name: Send reply to issue
         uses: actions/github-script@v7
         with:
           script: |
-            const comment = "سلام! من مشاور رنگ مو هستم. سوال خود را بپرسید.";
+            const fs = require('fs');
+            const answer = fs.readFileSync('answer.txt', 'utf8');
+            
             github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: comment
+              body: answer
             });
