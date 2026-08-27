@@ -23,7 +23,6 @@ jobs:
       - name: Run script to get answer
         id: get_answer
         run: |
-          # اینجا عنوان و متن issue رو به اسکریپت پاس می‌دیم
           node scripts/get_answer.js "${{ github.event.issue.title }} ${{ github.event.issue.body }}" > answer.txt
           cat answer.txt
       
