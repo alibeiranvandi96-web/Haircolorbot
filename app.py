@@ -32,9 +32,15 @@ from flask import Flask, jsonify, request
 
 # ------------------------------------------------------------------ تنظیمات
 
+AI_PROVIDER = os.getenv("AI_PROVIDER", "auto").strip().lower()
+
+BAI_API_KEY = os.getenv("BAI_API_KEY", "").strip()
+BAI_URL = os.getenv("BAI_URL", "https://api.b.ai/v1/chat/completions").strip()
+BAI_MODEL = os.getenv("BAI_MODEL", "Qwen3.8-Flash").strip()
+
 UPSTAGE_API_KEY = os.getenv("UPSTAGE_API_KEY", "").strip()
-UPSTAGE_URL = "https://api.upstage.ai/v1/chat/completions"
-UPSTAGE_MODEL = "solar-pro"
+UPSTAGE_URL = os.getenv("UPSTAGE_URL", "https://api.upstage.ai/v1/chat/completions").strip()
+UPSTAGE_MODEL = os.getenv("UPSTAGE_MODEL", "solar-pro").strip()
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_API = "https://api.telegram.org/bot{token}/{method}"
@@ -62,7 +68,7 @@ GLOSSING_FILE = "glossing.txt"
 BASE_PREP_FILE = "base_prep.txt"
 COLORING_METHODS_FILE = "coloring_methods.text"
 
-MSG_SERVICE_UNAVAILABLE = "⚠️ سرویس در دسترس نیست. (کلید UPSTAGE_API_KEY تنظیم نشده است.)"
+MSG_SERVICE_UNAVAILABLE = "⚠️ سرویس در دسترس نیست. (کلید سرویس هوش مصنوعی تنظیم نشده است.)"
 MSG_ANSWER_FAILED = "⚠️ الان نمی‌توانم پاسخ بدهم. لطفاً چند لحظه دیگر دوباره بپرسید."
 START_MESSAGE = (
     "سلام 👋 من دستیار تخصصی رنگ مو هستم.\n"
@@ -1138,9 +1144,75 @@ def _extract_json_object(text):
         return {}
 
 
+def _is_ai_available():
+    provider = AI_PROVIDER
+    if provider == "upstage":
+        return bool(UPSTAGE_API_KEY)
+    if provider == "bai":
+        return bool(BAI_API_KEY)
+    return bool(BAI_API_KEY or UPSTAGE_API_KEY)
+
+
+def _call_bai(messages, temperature=0.3, timeout=110):
+    if not BAI_API_KEY:
+        raise ValueError("BAI_API_KEY تنظیم نشده است.")
+    payload = {
+        "model": BAI_MODEL,
+        "messages": messages,
+        "temperature": temperature,
+        "stream": False,
+    }
+    headers = {
+        "Authorization": f"Bearer {BAI_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    response = requests.post(BAI_URL, headers=headers, json=payload, timeout=timeout)
+    response.raise_for_status()
+    data = response.json()
+    reply = data["choices"][0]["message"]["content"]
+    return (reply or "").strip()
+
+
+def _call_upstage(messages, temperature=0.3, timeout=110):
+    if not UPSTAGE_API_KEY:
+        raise ValueError("UPSTAGE_API_KEY تنظیم نشده است.")
+    payload = {
+        "model": UPSTAGE_MODEL,
+        "messages": messages,
+        "temperature": temperature,
+        "stream": False,
+    }
+    headers = {
+        "Authorization": f"Bearer {UPSTAGE_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    response = requests.post(UPSTAGE_URL, headers=headers, json=payload, timeout=timeout)
+    response.raise_for_status()
+    data = response.json()
+    reply = data["choices"][0]["message"]["content"]
+    return (reply or "").strip()
+
+
+def _call_ai(messages, temperature=0.3, timeout=110):
+    provider = AI_PROVIDER
+    if provider == "upstage":
+        return _call_upstage(messages, temperature=temperature, timeout=timeout)
+    if provider == "bai":
+        return _call_bai(messages, temperature=temperature, timeout=timeout)
+
+    # auto (پیش‌فرض): اول b.ai، اگه خطا داد Upstage
+    if BAI_API_KEY:
+        try:
+            return _call_bai(messages, temperature=temperature, timeout=timeout)
+        except Exception as err:
+            log(f"[ai] خطا در ارتباط با b.ai ({err})؛ در حال استفاده از Upstage به عنوان پشتیبان...")
+            return _call_upstage(messages, temperature=temperature, timeout=timeout)
+    return _call_upstage(messages, temperature=temperature, timeout=timeout)
+
+
 def _model_question_analysis(question, history_text=""):
     """Second-pass semantic parsing. It extracts intent/entities but does not answer."""
-    if not LLM_ANALYSIS_ENABLED or not UPSTAGE_API_KEY:
+    if not LLM_ANALYSIS_ENABLED or not _is_ai_available():
         return {}
     prompt = (
         "سوال زیر را فقط به JSON تبدیل کن؛ پاسخ تخصصی نده. هیچ اطلاعاتی که در سوال نیست اختراع نکن. "
@@ -1151,23 +1223,13 @@ def _model_question_analysis(question, history_text=""):
         f"سوال فعلی: {question}\n"
         f"زمینه پیام‌های اخیر: {history_text or 'ندارد'}"
     )
-    payload = {
-        "model": UPSTAGE_MODEL,
-        "messages": [
-            {"role": "system", "content": "You are an information extraction engine. Return valid JSON only."},
-            {"role": "user", "content": prompt},
-        ],
-        "temperature": 0,
-        "stream": False,
-    }
+    messages = [
+        {"role": "system", "content": "You are an information extraction engine. Return valid JSON only."},
+        {"role": "user", "content": prompt},
+    ]
     try:
-        response = requests.post(UPSTAGE_URL, headers={
-            "Authorization": f"Bearer {UPSTAGE_API_KEY}",
-            "Content-Type": "application/json",
-        }, json=payload, timeout=LLM_ANALYSIS_TIMEOUT)
-        response.raise_for_status()
-        data = response.json()
-        return _extract_json_object(data["choices"][0]["message"]["content"])
+        content = _call_ai(messages, temperature=0, timeout=LLM_ANALYSIS_TIMEOUT)
+        return _extract_json_object(content)
     except Exception as error:
         log(f"[analysis] semantic parsing failed: {error}")
         return {}
@@ -1280,7 +1342,7 @@ def answer(question, chat_id=None):
         return "لطفاً سوال خود را درباره رنگ مو بنویسید."
 
     refresh_knowledge()
-    if not UPSTAGE_API_KEY:
+    if not _is_ai_available():
         return MSG_SERVICE_UNAVAILABLE
 
     history = _history_text(chat_id)
@@ -1309,29 +1371,17 @@ def answer(question, chat_id=None):
     )
 
     temp = 0.15 if ctx["is_formula"] else 0.25
-    payload = {
-        "model": UPSTAGE_MODEL,
-        "messages": [
-            {"role": "system", "content": build_system_prompt(ctx)},
-            {"role": "user", "content": user_prompt},
-        ],
-        "temperature": temp,
-        "stream": False,
-    }
-    headers = {
-        "Authorization": f"Bearer {UPSTAGE_API_KEY}",
-        "Content-Type": "application/json",
-    }
+    messages = [
+        {"role": "system", "content": build_system_prompt(ctx)},
+        {"role": "user", "content": user_prompt},
+    ]
     try:
-        response = requests.post(UPSTAGE_URL, headers=headers, json=payload, timeout=110)
-        response.raise_for_status()
-        data = response.json()
-        reply = data["choices"][0]["message"]["content"].strip()
+        reply = _call_ai(messages, temperature=temp, timeout=110)
     except requests.RequestException as error:
-        log(f"[upstage] خطای ارتباط با Upstage: {error}")
+        log(f"[ai] خطای ارتباط با مدل هوش مصنوعی: {error}")
         return MSG_ANSWER_FAILED
-    except (KeyError, IndexError, TypeError, ValueError) as error:
-        log(f"[upstage] پاسخ نامعتبر از Upstage: {error}")
+    except Exception as error:
+        log(f"[ai] پاسخ نامعتبر از مدل هوش مصنوعی: {error}")
         return MSG_ANSWER_FAILED
 
     if not reply:
@@ -1468,6 +1518,8 @@ def index():
         },
         "knowledge_files": [d["source"] for d in _knowledge_cache["documents"]],
         "telegram": "set" if TELEGRAM_BOT_TOKEN else "missing",
+        "ai_provider": AI_PROVIDER,
+        "bai": "set" if BAI_API_KEY else "missing",
         "upstage": "set" if UPSTAGE_API_KEY else "missing",
         "webhook_base": WEBHOOK_BASE_URL or "not set - باید دستی وب‌هوک را تنظیم کنید",
     }), 200
@@ -1477,11 +1529,15 @@ def index():
 def health():
     documents, chunks, _ = refresh_knowledge()
     domain = _domain()
+    ai_available = _is_ai_available()
+    active_model = BAI_MODEL if (AI_PROVIDER in {"bai", "auto"} and BAI_API_KEY) else UPSTAGE_MODEL
     return (
         jsonify(
             {
-                "status": "ok" if UPSTAGE_API_KEY else "degraded",
-                "model": UPSTAGE_MODEL,
+                "status": "ok" if ai_available else "degraded",
+                "ai_provider": AI_PROVIDER,
+                "model": active_model,
+                "bai_api_key": "set" if BAI_API_KEY else "missing",
                 "upstage_api_key": "set" if UPSTAGE_API_KEY else "missing",
                 "telegram_bot_token": "set" if TELEGRAM_BOT_TOKEN else "missing",
                 "webhook_base_url": WEBHOOK_BASE_URL or "missing",
