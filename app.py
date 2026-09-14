@@ -3,7 +3,7 @@
 ============================
 نسخه‌ی ساده‌شده: پاسخ با درک مدل از منابع، بدون قوانین سخت‌گیرانه.
 
-  * مدل:            solar-pro (فقط Upstage API)
+  * مدل:            Qwen3.8-Flash (فقط b.ai API)
   * دانشنامه:       همه فایل‌های .txt / .text کنار همین فایل (آپدیت خودکار با mtime)
   * ورودی تلگرام:   POST /telegram
   * بررسی سلامت:    GET  /health
@@ -32,15 +32,9 @@ from flask import Flask, jsonify, request
 
 # ------------------------------------------------------------------ تنظیمات
 
-AI_PROVIDER = os.getenv("AI_PROVIDER", "auto").strip().lower()
-
 BAI_API_KEY = os.getenv("BAI_API_KEY", "").strip()
 BAI_URL = os.getenv("BAI_URL", "https://api.b.ai/v1/chat/completions").strip()
 BAI_MODEL = os.getenv("BAI_MODEL", "Qwen3.8-Flash").strip()
-
-UPSTAGE_API_KEY = os.getenv("UPSTAGE_API_KEY", "").strip()
-UPSTAGE_URL = os.getenv("UPSTAGE_URL", "https://api.upstage.ai/v1/chat/completions").strip()
-UPSTAGE_MODEL = os.getenv("UPSTAGE_MODEL", "solar-pro").strip()
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_API = "https://api.telegram.org/bot{token}/{method}"
@@ -1145,15 +1139,11 @@ def _extract_json_object(text):
 
 
 def _is_ai_available():
-    provider = AI_PROVIDER
-    if provider == "upstage":
-        return bool(UPSTAGE_API_KEY)
-    if provider == "bai":
-        return bool(BAI_API_KEY)
-    return bool(BAI_API_KEY or UPSTAGE_API_KEY)
+    return bool(BAI_API_KEY)
 
 
 def _call_bai(messages, temperature=0.3, timeout=110):
+    """صدا زدن b.ai با ساختار استاندارد OpenAI Chat Completions."""
     if not BAI_API_KEY:
         raise ValueError("BAI_API_KEY تنظیم نشده است.")
     payload = {
@@ -1166,48 +1156,27 @@ def _call_bai(messages, temperature=0.3, timeout=110):
         "Authorization": f"Bearer {BAI_API_KEY}",
         "Content-Type": "application/json",
     }
-    response = requests.post(BAI_URL, headers=headers, json=payload, timeout=timeout)
-    response.raise_for_status()
-    data = response.json()
-    reply = data["choices"][0]["message"]["content"]
-    return (reply or "").strip()
-
-
-def _call_upstage(messages, temperature=0.3, timeout=110):
-    if not UPSTAGE_API_KEY:
-        raise ValueError("UPSTAGE_API_KEY تنظیم نشده است.")
-    payload = {
-        "model": UPSTAGE_MODEL,
-        "messages": messages,
-        "temperature": temperature,
-        "stream": False,
-    }
-    headers = {
-        "Authorization": f"Bearer {UPSTAGE_API_KEY}",
-        "Content-Type": "application/json",
-    }
-    response = requests.post(UPSTAGE_URL, headers=headers, json=payload, timeout=timeout)
-    response.raise_for_status()
-    data = response.json()
-    reply = data["choices"][0]["message"]["content"]
+    try:
+        response = requests.post(BAI_URL, headers=headers, json=payload, timeout=timeout)
+        response.raise_for_status()
+    except requests.exceptions.Timeout as error:
+        log(f"[b.ai] تایم‌اوت: سرویس در {timeout} ثانیه پاسخ نداد ({error})")
+        raise
+    except requests.RequestException as error:
+        log(f"[b.ai] خطا در ارتباط با سرویس: {error}")
+        raise
+    try:
+        data = response.json()
+        reply = data["choices"][0]["message"]["content"]
+    except Exception as error:
+        log(f"[b.ai] پاسخ نامعتبر از سرویس: {error}")
+        raise ValueError(f"پاسخ نامعتبر از b.ai: {error}") from error
     return (reply or "").strip()
 
 
 def _call_ai(messages, temperature=0.3, timeout=110):
-    provider = AI_PROVIDER
-    if provider == "upstage":
-        return _call_upstage(messages, temperature=temperature, timeout=timeout)
-    if provider == "bai":
-        return _call_bai(messages, temperature=temperature, timeout=timeout)
-
-    # auto (پیش‌فرض): اول b.ai، اگه خطا داد Upstage
-    if BAI_API_KEY:
-        try:
-            return _call_bai(messages, temperature=temperature, timeout=timeout)
-        except Exception as err:
-            log(f"[ai] خطا در ارتباط با b.ai ({err})؛ در حال استفاده از Upstage به عنوان پشتیبان...")
-            return _call_upstage(messages, temperature=temperature, timeout=timeout)
-    return _call_upstage(messages, temperature=temperature, timeout=timeout)
+    """تنها لایه‌ی هوش مصنوعی: b.ai (بدون سرویس پشتیبان)."""
+    return _call_bai(messages, temperature=temperature, timeout=timeout)
 
 
 def _model_question_analysis(question, history_text=""):
@@ -1518,9 +1487,8 @@ def index():
         },
         "knowledge_files": [d["source"] for d in _knowledge_cache["documents"]],
         "telegram": "set" if TELEGRAM_BOT_TOKEN else "missing",
-        "ai_provider": AI_PROVIDER,
+        "ai_provider": "b.ai",
         "bai": "set" if BAI_API_KEY else "missing",
-        "upstage": "set" if UPSTAGE_API_KEY else "missing",
         "webhook_base": WEBHOOK_BASE_URL or "not set - باید دستی وب‌هوک را تنظیم کنید",
     }), 200
 
@@ -1530,15 +1498,14 @@ def health():
     documents, chunks, _ = refresh_knowledge()
     domain = _domain()
     ai_available = _is_ai_available()
-    active_model = BAI_MODEL if (AI_PROVIDER in {"bai", "auto"} and BAI_API_KEY) else UPSTAGE_MODEL
+    active_model = BAI_MODEL
     return (
         jsonify(
             {
                 "status": "ok" if ai_available else "degraded",
-                "ai_provider": AI_PROVIDER,
+                "ai_provider": "b.ai",
                 "model": active_model,
                 "bai_api_key": "set" if BAI_API_KEY else "missing",
-                "upstage_api_key": "set" if UPSTAGE_API_KEY else "missing",
                 "telegram_bot_token": "set" if TELEGRAM_BOT_TOKEN else "missing",
                 "webhook_base_url": WEBHOOK_BASE_URL or "missing",
                 "knowledge_files": [doc["source"] for doc in documents],
