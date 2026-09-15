@@ -3,7 +3,7 @@
 ============================
 نسخه‌ی ساده‌شده: پاسخ با درک مدل از منابع، بدون قوانین سخت‌گیرانه.
 
-  * مدل:            solar-pro (فقط Upstage API)
+  * مدل:            Qwen3.8-Flash (فقط b.ai API)
   * دانشنامه:       همه فایل‌های .txt / .text کنار همین فایل (آپدیت خودکار با mtime)
   * ورودی تلگرام:   POST /telegram
   * بررسی سلامت:    GET  /health
@@ -27,18 +27,26 @@ import re
 import time
 from difflib import SequenceMatcher
 
+from pathlib import Path
+
 import requests
 from flask import Flask, jsonify, request
 
 # ------------------------------------------------------------------ تنظیمات
 
-UPSTAGE_API_KEY = os.getenv("UPSTAGE_API_KEY", "").strip()
-UPSTAGE_URL = "https://api.upstage.ai/v1/chat/completions"
-UPSTAGE_MODEL = "solar-pro"
+BAI_API_KEY = os.getenv("BAI_API_KEY", "").strip()
+BAI_URL = os.getenv("BAI_URL", "https://api.b.ai/v1/chat/completions").strip() or "https://api.b.ai/v1/chat/completions"
+BAI_MODEL = os.getenv("BAI_MODEL", "Qwen3.8-Flash").strip() or "Qwen3.8-Flash"
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_API = "https://api.telegram.org/bot{token}/{method}"
 WEBHOOK_BASE_URL = os.getenv("WEBHOOK_BASE_URL", "").strip().rstrip("/")
+
+BASE_DIR = Path(__file__).resolve().parent
+KNOWLEDGE_FILES = (
+    list(BASE_DIR.glob("*.txt")) +
+    list(BASE_DIR.glob("*.text"))
+)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 KNOWLEDGE_PATTERNS = ("*.txt", "*.text", "*.tex")
@@ -62,7 +70,7 @@ GLOSSING_FILE = "glossing.txt"
 BASE_PREP_FILE = "base_prep.txt"
 COLORING_METHODS_FILE = "coloring_methods.text"
 
-MSG_SERVICE_UNAVAILABLE = "⚠️ سرویس در دسترس نیست. (کلید UPSTAGE_API_KEY تنظیم نشده است.)"
+MSG_SERVICE_UNAVAILABLE = "⚠️ سرویس در دسترس نیست. (کلید BAI_API_KEY تنظیم نشده است.)"
 MSG_ANSWER_FAILED = "⚠️ الان نمی‌توانم پاسخ بدهم. لطفاً چند لحظه دیگر دوباره بپرسید."
 START_MESSAGE = (
     "سلام 👋 من دستیار تخصصی رنگ مو هستم.\n"
@@ -118,13 +126,12 @@ def _read_knowledge_file(path):
 
 def _discover_files():
     """همه مسیرهای فایل‌های دانشنامه را پیدا می‌کند."""
-    paths = []
-    for pattern in KNOWLEDGE_PATTERNS:
-        paths.extend(glob.glob(os.path.join(HERE, pattern)))
     result = {}
-    for path in sorted(set(paths)):
+    for path in sorted(set(str(p) for p in KNOWLEDGE_FILES)):
         name = os.path.basename(path)
         if name in IGNORED_FILES or os.path.basename(__file__) == name:
+            continue
+        if not os.path.isfile(path):
             continue
         result[path] = name
     return result
@@ -1140,7 +1147,7 @@ def _extract_json_object(text):
 
 def _model_question_analysis(question, history_text=""):
     """Second-pass semantic parsing. It extracts intent/entities but does not answer."""
-    if not LLM_ANALYSIS_ENABLED or not UPSTAGE_API_KEY:
+    if not LLM_ANALYSIS_ENABLED or not BAI_API_KEY:
         return {}
     prompt = (
         "سوال زیر را فقط به JSON تبدیل کن؛ پاسخ تخصصی نده. هیچ اطلاعاتی که در سوال نیست اختراع نکن. "
@@ -1152,7 +1159,7 @@ def _model_question_analysis(question, history_text=""):
         f"زمینه پیام‌های اخیر: {history_text or 'ندارد'}"
     )
     payload = {
-        "model": UPSTAGE_MODEL,
+        "model": BAI_MODEL,
         "messages": [
             {"role": "system", "content": "You are an information extraction engine. Return valid JSON only."},
             {"role": "user", "content": prompt},
@@ -1161,8 +1168,8 @@ def _model_question_analysis(question, history_text=""):
         "stream": False,
     }
     try:
-        response = requests.post(UPSTAGE_URL, headers={
-            "Authorization": f"Bearer {UPSTAGE_API_KEY}",
+        response = requests.post(BAI_URL, headers={
+            "Authorization": f"Bearer {BAI_API_KEY}",
             "Content-Type": "application/json",
         }, json=payload, timeout=LLM_ANALYSIS_TIMEOUT)
         response.raise_for_status()
@@ -1280,7 +1287,7 @@ def answer(question, chat_id=None):
         return "لطفاً سوال خود را درباره رنگ مو بنویسید."
 
     refresh_knowledge()
-    if not UPSTAGE_API_KEY:
+    if not BAI_API_KEY:
         return MSG_SERVICE_UNAVAILABLE
 
     history = _history_text(chat_id)
@@ -1310,7 +1317,7 @@ def answer(question, chat_id=None):
 
     temp = 0.15 if ctx["is_formula"] else 0.25
     payload = {
-        "model": UPSTAGE_MODEL,
+        "model": BAI_MODEL,
         "messages": [
             {"role": "system", "content": build_system_prompt(ctx)},
             {"role": "user", "content": user_prompt},
@@ -1319,19 +1326,19 @@ def answer(question, chat_id=None):
         "stream": False,
     }
     headers = {
-        "Authorization": f"Bearer {UPSTAGE_API_KEY}",
+        "Authorization": f"Bearer {BAI_API_KEY}",
         "Content-Type": "application/json",
     }
     try:
-        response = requests.post(UPSTAGE_URL, headers=headers, json=payload, timeout=110)
+        response = requests.post(BAI_URL, headers=headers, json=payload, timeout=110)
         response.raise_for_status()
         data = response.json()
         reply = data["choices"][0]["message"]["content"].strip()
     except requests.RequestException as error:
-        log(f"[upstage] خطای ارتباط با Upstage: {error}")
+        log(f"[b.ai] خطای ارتباط با b.ai: {error}")
         return MSG_ANSWER_FAILED
     except (KeyError, IndexError, TypeError, ValueError) as error:
-        log(f"[upstage] پاسخ نامعتبر از Upstage: {error}")
+        log(f"[b.ai] پاسخ نامعتبر از b.ai: {error}")
         return MSG_ANSWER_FAILED
 
     if not reply:
@@ -1468,7 +1475,9 @@ def index():
         },
         "knowledge_files": [d["source"] for d in _knowledge_cache["documents"]],
         "telegram": "set" if TELEGRAM_BOT_TOKEN else "missing",
-        "upstage": "set" if UPSTAGE_API_KEY else "missing",
+        "bai_api_key": "set" if BAI_API_KEY else "missing",
+        "bai_url": BAI_URL,
+        "bai_model": BAI_MODEL,
         "webhook_base": WEBHOOK_BASE_URL or "not set - باید دستی وب‌هوک را تنظیم کنید",
     }), 200
 
@@ -1480,9 +1489,11 @@ def health():
     return (
         jsonify(
             {
-                "status": "ok" if UPSTAGE_API_KEY else "degraded",
-                "model": UPSTAGE_MODEL,
-                "upstage_api_key": "set" if UPSTAGE_API_KEY else "missing",
+                "status": "ok" if BAI_API_KEY else "degraded",
+                "model": BAI_MODEL,
+                "bai_api_key": "set" if BAI_API_KEY else "missing",
+                "bai_url": BAI_URL,
+                "bai_model": BAI_MODEL,
                 "telegram_bot_token": "set" if TELEGRAM_BOT_TOKEN else "missing",
                 "webhook_base_url": WEBHOOK_BASE_URL or "missing",
                 "knowledge_files": [doc["source"] for doc in documents],
