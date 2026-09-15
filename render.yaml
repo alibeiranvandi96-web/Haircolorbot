@@ -12,7 +12,7 @@ services:
         sync: false
       - key: WEBHOOK_BASE_URL
         sync: false
-      - key: UPSTAGE_API_KEY
+      - key: BAI_API_KEY
         sync: false
       - key: PORT
         value: 10000
