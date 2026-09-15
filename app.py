@@ -749,21 +749,13 @@ def setup_webhook():
 # اجرای برنامه
 # =========================================================
 
-# نکته مهم (فیکس مشکل Render):
-# روی Render برنامه با gunicorn به‌صورت app:app اجرا می‌شود و بلوک
-# if __name__ == "__main__" هرگز اجرا نمی‌شود. اگر setup_webhook() فقط
-# داخل آن بلوک باشد، Webhook تلگرام هیچ‌وقت ست نمی‌شود، تلگرام هیچ
-# آپدیتی به /webhook نمی‌فرستد و ربات (@TarkibRangmobot) به پیام‌ها
-# جواب نمی‌دهد. پس setup_webhook() باید هنگام import هم اجرا شود
-# تا هم روی Render (gunicorn) و هم اجرای محلی (python app.py) کار کند.
-setup_webhook()
-
-
 if __name__ == "__main__":
+    setup_webhook()
+
     port = int(os.getenv("PORT", "10000"))
 
     app.run(
         host="0.0.0.0",
         port=port,
         debug=False
-          )
+    )
